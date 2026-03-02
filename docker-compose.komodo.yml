@@ -1,0 +1,182 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    env_file:
+      - .env
+    environment:
+      FLASK_ENV: production
+      SOCKETIO_ASYNC_MODE: gevent
+      DEMO_MODE: ${DEMO_MODE:-false}
+      DASHBOARD_ORIGIN: ${DASHBOARD_ORIGIN:-http://localhost:3000}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:-}@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:-}@redis:6379/2
+      DATABASE_URL: postgresql://networkops:${POSTGRES_PASSWORD}@postgres:5432/networkops
+    expose:
+      - "5001"
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    volumes:
+      - networkops_data:/app/data
+      - networkops_baselines:/app/baselines
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5001/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+    restart: unless-stopped
+    networks:
+      - networkops
+
+  frontend:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile.frontend
+      args:
+        REACT_APP_API_URL: ""
+        REACT_APP_WS_URL: ""
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:80/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - networkops
+
+  redis:
+    image: redis:7-alpine
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --maxmemory
+      - 512mb
+      - --maxmemory-policy
+      - allkeys-lru
+      - --requirepass
+      - ${REDIS_PASSWORD}
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$REDIS_PASSWORD\" ping | grep PONG"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - networkops
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: networkops
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: networkops
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U networkops -d networkops"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - networkops
+
+  celery-worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+    command: celery -A core.celery_app worker --loglevel=info --pool=gevent --concurrency=10
+    env_file:
+      - .env
+    environment:
+      REDIS_URL: redis://:${REDIS_PASSWORD:-}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:-}@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:-}@redis:6379/2
+      DATABASE_URL: postgresql://networkops:${POSTGRES_PASSWORD}@postgres:5432/networkops
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    volumes:
+      - networkops_data:/app/data
+      - networkops_baselines:/app/baselines
+    restart: unless-stopped
+    profiles: ["worker"]
+    networks:
+      - networkops
+
+  celery-beat:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+    command: celery -A core.celery_app beat --loglevel=info
+    env_file:
+      - .env
+    environment:
+      REDIS_URL: redis://:${REDIS_PASSWORD:-}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:-}@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:-}@redis:6379/2
+      DATABASE_URL: postgresql://networkops:${POSTGRES_PASSWORD}@postgres:5432/networkops
+    depends_on:
+      redis:
+        condition: service_healthy
+      celery-worker:
+        condition: service_started
+    volumes:
+      - networkops_data:/app/data
+      - networkops_baselines:/app/baselines
+    restart: unless-stopped
+    profiles: ["worker"]
+    networks:
+      - networkops
+
+  mcp-server:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.mcp
+    env_file:
+      - .env
+    environment:
+      MEMORY_ENABLE_SEMANTIC: "true"
+      MEMORY_AUTO_PRUNE: "true"
+      REDIS_URL: redis://:${REDIS_PASSWORD:-}@redis:6379/0
+    volumes:
+      - networkops_data:/app/data
+      - networkops_baselines:/app/baselines
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    profiles: ["mcp"]
+    networks:
+      - networkops
+
+networks:
+  networkops:
+    name: networkops-komodo-network
+    driver: bridge
+
+volumes:
+  networkops_data:
+    driver: local
+  networkops_baselines:
+    driver: local
+  redis_data:
+    driver: local
+  postgres_data:
+    driver: local
