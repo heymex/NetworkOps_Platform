@@ -22,7 +22,7 @@ env:
 jobs:
   # Security scan before publishing
   security-scan:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
 
@@ -49,7 +49,7 @@ jobs:
 
   build-and-push:
     needs: security-scan
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
 
     permissions:
       contents: read
@@ -132,7 +132,7 @@ jobs:
   # Create a summary after all images are built
   summary:
     needs: build-and-push
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - name: Final summary
         run: |
